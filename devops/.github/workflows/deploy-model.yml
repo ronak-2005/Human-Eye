@@ -1,0 +1,116 @@
+name: Deploy ML Model to Production
+
+# Triggered manually by DevOps after ML engineer tags model in MLflow
+# Usage: Actions → Deploy ML Model → Run workflow → enter run_id
+
+on:
+  workflow_dispatch:
+    inputs:
+      mlflow_run_id:
+        description: "MLflow run ID to promote to production"
+        required: true
+        type: string
+      model_name:
+        description: "Model name (e.g. keystroke_model, text_scorer, fusion_engine)"
+        required: true
+        type: choice
+        options:
+          - keystroke_model
+          - mouse_model
+          - scroll_model
+          - text_scorer
+          - resume_scorer
+          - fusion_engine
+          - rppg_detector
+          - gan_detector
+          - voice_jitter
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+
+jobs:
+  promote-model:
+    name: Promote Model ${{ inputs.model_name }} → ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install MLflow
+        run: pip install mlflow boto3
+
+      - name: Download model from MLflow + upload to S3
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          S3_BUCKET: ${{ secrets.S3_MODELS_BUCKET }}
+        run: |
+          python - <<'EOF'
+          import mlflow
+          import boto3
+          import os
+
+          run_id = "${{ inputs.mlflow_run_id }}"
+          model_name = "${{ inputs.model_name }}"
+          env = "${{ inputs.environment }}"
+
+          # Download from MLflow
+          client = mlflow.tracking.MlflowClient()
+          local_path = f"/tmp/{model_name}"
+          mlflow.artifacts.download_artifacts(
+              run_id=run_id,
+              artifact_path=f"models/{model_name}",
+              dst_path=local_path
+          )
+
+          # Upload to S3 production prefix
+          s3 = boto3.client("s3")
+          bucket = os.environ["S3_BUCKET"]
+          s3_key = f"{env}/{model_name}/model.pt"
+
+          s3.upload_file(f"{local_path}/model.pt", bucket, s3_key)
+          print(f"Uploaded {model_name} to s3://{bucket}/{s3_key}")
+
+          # Tag the MLflow run
+          client.set_tag(run_id, f"deployed_to_{env}", "true")
+          client.set_tag(run_id, "promoted_by", "github-actions")
+          EOF
+
+      - name: Restart ML engine ECS service (picks up new model from S3)
+        run: |
+          aws ecs update-service \
+            --cluster humaneye-cluster-${{ inputs.environment }} \
+            --service humaneye-ml-engine-${{ inputs.environment }} \
+            --force-new-deployment
+
+      - name: Wait for ML engine to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster humaneye-cluster-${{ inputs.environment }} \
+            --services humaneye-ml-engine-${{ inputs.environment }}
+
+      - name: Smoke test — verify ML engine healthy
+        run: |
+          ENDPOINT="https://api.humaneye.io"
+          if [ "${{ inputs.environment }}" = "staging" ]; then
+            ENDPOINT="https://staging-api.humaneye.io"
+          fi
+          curl -f $ENDPOINT/api/v1/health
+          echo "Model ${{ inputs.model_name }} deployed successfully to ${{ inputs.environment }}"

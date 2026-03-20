@@ -1,0 +1,147 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,300&display=swap');
+
+/* ── Design Tokens ────────────────────────────────────────── */
+:root {
+  /* Background layers */
+  --bg-base:       #080C10;
+  --bg-surface:    #0D1318;
+  --bg-raised:     #111820;
+  --bg-overlay:    #182028;
+  --bg-highlight:  #1E2A35;
+
+  /* Brand */
+  --teal-900:      #032920;
+  --teal-800:      #064D3C;
+  --teal-700:      #0A7055;
+  --teal-600:      #0D9470;
+  --teal-500:      #10B88A;
+  --teal-400:      #3ECFA3;
+  --teal-300:      #72E0BC;
+  --teal-200:      #A8EED4;
+  --teal-100:      #DCFAEF;
+
+  /* Semantic verdict colours */
+  --score-human:      #10B88A;   /* 80-100 */
+  --score-likely:     #4ADE80;   /* 65-79  */
+  --score-uncertain:  #FACC15;   /* 50-64  */
+  --score-suspicious: #FB923C;   /* 25-49  */
+  --score-blocked:    #F43F5E;   /* 0-24   */
+
+  /* Neutral */
+  --text-primary:   #EEF2F6;
+  --text-secondary: #8BA4B8;
+  --text-muted:     #4E6478;
+  --text-disabled:  #2D3F4E;
+
+  --border-subtle:  rgba(62, 207, 163, 0.10);
+  --border-default: rgba(62, 207, 163, 0.18);
+  --border-strong:  rgba(62, 207, 163, 0.32);
+
+  /* Typography */
+  --font-display: 'Syne', sans-serif;
+  --font-body:    'DM Sans', sans-serif;
+  --font-mono:    'DM Mono', monospace;
+
+  /* Radii */
+  --r-sm:  6px;
+  --r-md:  10px;
+  --r-lg:  16px;
+  --r-xl:  24px;
+
+  /* Shadows */
+  --shadow-card:  0 1px 2px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.3);
+  --shadow-glow:  0 0 24px rgba(16, 184, 138, 0.12);
+  --shadow-pop:   0 8px 32px rgba(0,0,0,0.5);
+}
+
+/* ── Reset ────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+
+body {
+  font-family: var(--font-body);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  min-height: 100vh;
+  /* Subtle grid texture */
+  background-image:
+    linear-gradient(rgba(16,184,138,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(16,184,138,0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+/* ── Typography ───────────────────────────────────────────── */
+h1, h2, h3, h4, h5 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--text-primary);
+}
+
+code, pre, .mono {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-base); }
+::-webkit-scrollbar-thumb { background: var(--bg-overlay); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--teal-800); }
+
+/* ── Utility ──────────────────────────────────────────────── */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.card-raised {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+}
+
+.glow-border {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-glow);
+}
+
+.teal { color: var(--teal-400); }
+.muted { color: var(--text-muted); }
+.mono { font-family: var(--font-mono); }
+
+/* ── Animations ───────────────────────────────────────────── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(16,184,138,0.4); }
+  70%  { box-shadow: 0 0 0 8px rgba(16,184,138,0); }
+  100% { box-shadow: 0 0 0 0 rgba(16,184,138,0); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-fade-up {
+  animation: fadeUp 0.4s ease both;
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-raised) 25%,
+    var(--bg-overlay) 50%,
+    var(--bg-raised) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--r-sm);
+}

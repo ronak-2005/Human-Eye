@@ -1,0 +1,425 @@
+name: AWS Config Compliance + Security Group Audit (Weekly)
+
+# ============================================================
+# Security Engineer requirement:
+#   "AWS Config compliance report + security group audit — weekly automated"
+# ============================================================
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"    # Every Monday 6am UTC
+  workflow_dispatch:         # Manual trigger at any time
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+
+  # ── Job 1: AWS Config Compliance Report ──────────────────
+  aws-config-compliance:
+    name: AWS Config Compliance Report
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get AWS Config compliance summary
+        id: compliance
+        run: |
+          echo "## AWS Config Compliance Report — $(date -u '+%Y-%m-%d %H:%M UTC')" > report.md
+          echo "" >> report.md
+
+          # Overall compliance summary
+          echo "### Compliance Summary" >> report.md
+          aws configservice get-compliance-summary-by-config-rule \
+            --query 'ComplianceSummariesByConfigRule[*].{Rule:ConfigRuleName,Compliant:ComplianceByConfigRules[?Compliance.ComplianceType==`COMPLIANT`]|length(@),NonCompliant:ComplianceByConfigRules[?Compliance.ComplianceType==`NON_COMPLIANT`]|length(@)}' \
+            --output table >> report.md 2>/dev/null || echo "No Config rules found — ensure AWS Config is enabled" >> report.md
+
+          echo "" >> report.md
+
+          # Non-compliant resources (the important ones)
+          echo "### Non-Compliant Resources" >> report.md
+          aws configservice describe-compliance-by-config-rule \
+            --compliance-types NON_COMPLIANT \
+            --query 'ComplianceByConfigRules[*].{Rule:ConfigRuleName,Status:Compliance.ComplianceType}' \
+            --output table >> report.md 2>/dev/null || echo "None found or AWS Config not configured" >> report.md
+
+          # Check specific SOC 2 critical rules
+          echo "" >> report.md
+          echo "### SOC 2 Critical Rule Status" >> report.md
+
+          RULES=(
+            "encrypted-volumes"
+            "rds-storage-encrypted"
+            "elasticache-replication-group-encrypted-at-rest"
+            "s3-bucket-ssl-requests-only"
+            "cloudtrail-enabled"
+            "multi-region-cloudtrail-enabled"
+            "vpc-flow-logs-enabled"
+            "restricted-ssh"
+            "restricted-common-ports"
+            "iam-password-policy"
+            "root-account-mfa-enabled"
+            "iam-no-inline-policy-check"
+            "s3-bucket-public-read-prohibited"
+            "s3-bucket-public-write-prohibited"
+          )
+
+          for rule in "${RULES[@]}"; do
+            STATUS=$(aws configservice describe-compliance-by-config-rule \
+              --config-rule-names $rule \
+              --query 'ComplianceByConfigRules[0].Compliance.ComplianceType' \
+              --output text 2>/dev/null || echo "NOT_FOUND")
+            if [ "$STATUS" = "NON_COMPLIANT" ]; then
+              echo "❌ FAIL: $rule" >> report.md
+            elif [ "$STATUS" = "COMPLIANT" ]; then
+              echo "✅ PASS: $rule" >> report.md
+            else
+              echo "⚠️  MISSING: $rule — rule not configured" >> report.md
+            fi
+          done
+
+          cat report.md
+
+      - name: Upload compliance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: aws-config-compliance-${{ github.run_number }}
+          path: report.md
+          retention-days: 90
+
+  # ── Job 2: Security Group Audit ──────────────────────────
+  security-group-audit:
+    name: Security Group Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Audit security groups for dangerous rules
+        id: sg_audit
+        run: |
+          echo "## Security Group Audit — $(date -u '+%Y-%m-%d %H:%M UTC')" > sg-report.md
+          echo "" >> sg-report.md
+          VIOLATIONS=0
+
+          echo "### Dangerous Inbound Rules (0.0.0.0/0 on sensitive ports)" >> sg-report.md
+
+          # Check for 0.0.0.0/0 on SSH (22)
+          echo "" >> sg-report.md
+          echo "#### SSH open to world (port 22)" >> sg-report.md
+          RESULT=$(aws ec2 describe-security-groups \
+            --filters "Name=ip-permission.cidr,Values=0.0.0.0/0" \
+                      "Name=ip-permission.from-port,Values=22" \
+                      "Name=ip-permission.to-port,Values=22" \
+            --query 'SecurityGroups[*].{ID:GroupId,Name:GroupName,VPC:VpcId}' \
+            --output table)
+          echo "$RESULT" >> sg-report.md
+          if echo "$RESULT" | grep -q "sg-"; then
+            echo "❌ CRITICAL: SSH open to 0.0.0.0/0" >> sg-report.md
+            VIOLATIONS=$((VIOLATIONS+1))
+          else
+            echo "✅ PASS: No SSH open to world" >> sg-report.md
+          fi
+
+          # Check for 0.0.0.0/0 on RDP (3389)
+          echo "" >> sg-report.md
+          echo "#### RDP open to world (port 3389)" >> sg-report.md
+          RESULT=$(aws ec2 describe-security-groups \
+            --filters "Name=ip-permission.cidr,Values=0.0.0.0/0" \
+                      "Name=ip-permission.from-port,Values=3389" \
+            --query 'SecurityGroups[*].{ID:GroupId,Name:GroupName}' \
+            --output table)
+          echo "$RESULT" >> sg-report.md
+          if echo "$RESULT" | grep -q "sg-"; then
+            echo "❌ CRITICAL: RDP open to 0.0.0.0/0" >> sg-report.md
+            VIOLATIONS=$((VIOLATIONS+1))
+          else
+            echo "✅ PASS: No RDP open to world" >> sg-report.md
+          fi
+
+          # Check for 0.0.0.0/0 on PostgreSQL (5432)
+          echo "" >> sg-report.md
+          echo "#### PostgreSQL open to world (port 5432)" >> sg-report.md
+          RESULT=$(aws ec2 describe-security-groups \
+            --filters "Name=ip-permission.cidr,Values=0.0.0.0/0" \
+                      "Name=ip-permission.from-port,Values=5432" \
+            --query 'SecurityGroups[*].{ID:GroupId,Name:GroupName}' \
+            --output table)
+          echo "$RESULT" >> sg-report.md
+          if echo "$RESULT" | grep -q "sg-"; then
+            echo "❌ CRITICAL: PostgreSQL open to 0.0.0.0/0" >> sg-report.md
+            VIOLATIONS=$((VIOLATIONS+1))
+          else
+            echo "✅ PASS: PostgreSQL not exposed to world" >> sg-report.md
+          fi
+
+          # Check for 0.0.0.0/0 on Redis (6379)
+          echo "" >> sg-report.md
+          echo "#### Redis open to world (port 6379)" >> sg-report.md
+          RESULT=$(aws ec2 describe-security-groups \
+            --filters "Name=ip-permission.cidr,Values=0.0.0.0/0" \
+                      "Name=ip-permission.from-port,Values=6379" \
+            --query 'SecurityGroups[*].{ID:GroupId,Name:GroupName}' \
+            --output table)
+          echo "$RESULT" >> sg-report.md
+          if echo "$RESULT" | grep -q "sg-"; then
+            echo "❌ CRITICAL: Redis open to 0.0.0.0/0" >> sg-report.md
+            VIOLATIONS=$((VIOLATIONS+1))
+          else
+            echo "✅ PASS: Redis not exposed to world" >> sg-report.md
+          fi
+
+          # Check ML engine port 8001 (MUST be internal only)
+          echo "" >> sg-report.md
+          echo "#### ML Engine port 8001 — must NEVER be internet-facing" >> sg-report.md
+          RESULT=$(aws ec2 describe-security-groups \
+            --filters "Name=ip-permission.cidr,Values=0.0.0.0/0" \
+                      "Name=ip-permission.from-port,Values=8001" \
+            --query 'SecurityGroups[*].{ID:GroupId,Name:GroupName}' \
+            --output table)
+          echo "$RESULT" >> sg-report.md
+          if echo "$RESULT" | grep -q "sg-"; then
+            echo "❌ CRITICAL: ML Engine port 8001 open to internet!" >> sg-report.md
+            VIOLATIONS=$((VIOLATIONS+1))
+          else
+            echo "✅ PASS: ML Engine port 8001 internal only" >> sg-report.md
+          fi
+
+          # Check for all-traffic open (protocol -1)
+          echo "" >> sg-report.md
+          echo "#### All-traffic rules open to world (protocol -1 / 0.0.0.0/0)" >> sg-report.md
+          RESULT=$(aws ec2 describe-security-groups \
+            --filters "Name=ip-permission.cidr,Values=0.0.0.0/0" \
+                      "Name=ip-permission.ip-protocol,Values=-1" \
+            --query 'SecurityGroups[*].{ID:GroupId,Name:GroupName,VPC:VpcId}' \
+            --output table)
+          echo "$RESULT" >> sg-report.md
+          if echo "$RESULT" | grep -q "sg-"; then
+            echo "⚠️  WARNING: Security groups with all-traffic from 0.0.0.0/0 — verify these are intentional" >> sg-report.md
+          else
+            echo "✅ PASS: No all-traffic rules open to world" >> sg-report.md
+          fi
+
+          # Verify HumanEye-specific SG rules match Terraform spec
+          echo "" >> sg-report.md
+          echo "### HumanEye Security Group Verification" >> sg-report.md
+          for SG_NAME in "humaneye-alb-sg" "humaneye-backend-sg" "humaneye-ml-engine-sg" "humaneye-rds-sg" "humaneye-redis-sg"; do
+            SG_ID=$(aws ec2 describe-security-groups \
+              --filters "Name=group-name,Values=${SG_NAME}-*" \
+              --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)
+            if [ "$SG_ID" != "None" ] && [ -n "$SG_ID" ]; then
+              echo "✅ Found: $SG_NAME ($SG_ID)" >> sg-report.md
+            else
+              echo "⚠️  Missing: $SG_NAME — run terraform apply" >> sg-report.md
+            fi
+          done
+
+          echo "" >> sg-report.md
+          echo "---" >> sg-report.md
+          echo "**Total violations: $VIOLATIONS**" >> sg-report.md
+
+          cat sg-report.md
+
+          # Fail the job if critical violations found
+          if [ $VIOLATIONS -gt 0 ]; then
+            echo "::error::$VIOLATIONS critical security group violations found. See report."
+            exit 1
+          fi
+
+      - name: Upload SG audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-group-audit-${{ github.run_number }}
+          path: sg-report.md
+          retention-days: 90
+
+  # ── Job 3: CloudTrail + Encryption Checks ───────────────
+  encryption-and-cloudtrail:
+    name: Encryption + CloudTrail Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check CloudTrail enabled
+        run: |
+          echo "### CloudTrail Status" 
+          STATUS=$(aws cloudtrail get-trail-status \
+            --name humaneye-cloudtrail \
+            --query 'IsLogging' --output text 2>/dev/null || echo "NOT_FOUND")
+          if [ "$STATUS" = "True" ]; then
+            echo "✅ CloudTrail is logging"
+          else
+            echo "❌ CloudTrail is NOT logging or trail not found"
+            exit 1
+          fi
+
+      - name: Check RDS encryption
+        run: |
+          echo "### RDS Encryption"
+          UNENCRYPTED=$(aws rds describe-db-instances \
+            --query 'DBInstances[?StorageEncrypted==`false`].DBInstanceIdentifier' \
+            --output text)
+          if [ -z "$UNENCRYPTED" ]; then
+            echo "✅ All RDS instances encrypted at rest"
+          else
+            echo "❌ Unencrypted RDS instances: $UNENCRYPTED"
+            exit 1
+          fi
+
+      - name: Check S3 bucket encryption
+        run: |
+          echo "### S3 Encryption"
+          for BUCKET in $(aws s3api list-buckets \
+            --query 'Buckets[?contains(Name,`humaneye`)].Name' --output text); do
+            ENCRYPTION=$(aws s3api get-bucket-encryption \
+              --bucket $BUCKET \
+              --query 'ServerSideEncryptionConfiguration.Rules[0].ApplyServerSideEncryptionByDefault.SSEAlgorithm' \
+              --output text 2>/dev/null || echo "NONE")
+            if [ "$ENCRYPTION" != "NONE" ]; then
+              echo "✅ $BUCKET — encrypted ($ENCRYPTION)"
+            else
+              echo "❌ $BUCKET — NOT encrypted"
+              EXIT_CODE=1
+            fi
+          done
+          exit ${EXIT_CODE:-0}
+
+      - name: Check EBS volume encryption
+        run: |
+          echo "### EBS Volume Encryption"
+          UNENCRYPTED=$(aws ec2 describe-volumes \
+            --filters "Name=tag:Project,Values=HumanEye" \
+            --query 'Volumes[?Encrypted==`false`].VolumeId' \
+            --output text)
+          if [ -z "$UNENCRYPTED" ]; then
+            echo "✅ All EBS volumes encrypted"
+          else
+            echo "❌ Unencrypted EBS volumes: $UNENCRYPTED"
+            exit 1
+          fi
+
+      - name: Check VPC Flow Logs enabled
+        run: |
+          echo "### VPC Flow Logs"
+          VPC_ID=$(aws ec2 describe-vpcs \
+            --filters "Name=tag:Project,Values=HumanEye" \
+            --query 'Vpcs[0].VpcId' --output text)
+
+          if [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+            echo "⚠️  No HumanEye VPC found — skipping"
+          else
+            FLOW_LOGS=$(aws ec2 describe-flow-logs \
+              --filter "Name=resource-id,Values=$VPC_ID" \
+              --query 'FlowLogs[?FlowLogStatus==`ACTIVE`].FlowLogId' \
+              --output text)
+            if [ -n "$FLOW_LOGS" ]; then
+              echo "✅ VPC Flow Logs active on $VPC_ID"
+            else
+              echo "❌ VPC Flow Logs NOT enabled on $VPC_ID"
+              exit 1
+            fi
+          fi
+
+  # ── Job 4: IAM Audit ─────────────────────────────────────
+  iam-audit:
+    name: IAM Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check for IAM users with access keys older than 90 days
+        run: |
+          echo "### IAM Access Key Age Audit"
+          CUTOFF=$(date -u -d '90 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                   date -u -v-90d +%Y-%m-%dT%H:%M:%SZ)
+
+          aws iam list-users --query 'Users[*].UserName' --output text | \
+          tr '\t' '\n' | while read USER; do
+            aws iam list-access-keys --user-name "$USER" \
+              --query "AccessKeyMetadata[?CreateDate<='$CUTOFF' && Status=='Active'].{User:'$USER',KeyId:AccessKeyId,Created:CreateDate}" \
+              --output table
+          done
+
+      - name: Check root account has no active access keys
+        run: |
+          echo "### Root Account Access Keys"
+          ROOT_KEYS=$(aws iam get-account-summary \
+            --query 'SummaryMap.AccountAccessKeysPresent' --output text)
+          if [ "$ROOT_KEYS" = "0" ]; then
+            echo "✅ Root account has no active access keys"
+          else
+            echo "❌ CRITICAL: Root account has active access keys — delete immediately"
+            exit 1
+          fi
+
+      - name: Check MFA on IAM users
+        run: |
+          echo "### IAM Users Without MFA"
+          NO_MFA=$(aws iam list-users --query 'Users[*].UserName' --output text | \
+          tr '\t' '\n' | while read USER; do
+            MFA=$(aws iam list-mfa-devices --user-name "$USER" \
+              --query 'MFADevices | length(@)' --output text)
+            if [ "$MFA" = "0" ]; then
+              echo "$USER"
+            fi
+          done)
+
+          if [ -z "$NO_MFA" ]; then
+            echo "✅ All IAM users have MFA enabled"
+          else
+            echo "⚠️  Users without MFA: $NO_MFA"
+          fi
+
+  # ── Job 5: Notify on any failure ─────────────────────────
+  notify-on-failure:
+    name: Notify Security Engineer
+    runs-on: ubuntu-latest
+    needs:
+      - aws-config-compliance
+      - security-group-audit
+      - encryption-and-cloudtrail
+      - iam-audit
+    if: failure()
+
+    steps:
+      - name: Post failure summary
+        run: |
+          echo "::error::Weekly security audit FAILED. One or more checks found violations."
+          echo "Review the failing job's artifact for details."
+          echo "Assign to: Security Engineer + DevOps Engineer"
+          # In production: add Slack notification or PagerDuty alert here
+          # curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+          #   -H 'Content-type: application/json' \
+          #   --data '{"text":"⚠️ HumanEye weekly security audit FAILED. Check GitHub Actions."}'

@@ -1,0 +1,42 @@
+# HumanEye ML Engine — Dependencies
+# Phase 1: Required now
+# Phase 2: Required for face/voice detection (marked)
+
+# ─── Core ML ─────────────────────────────────────────────────────────────────
+torch==2.2.0
+torchvision==0.17.0
+onnxruntime==1.17.0          # Fast inference in production (CPU)
+onnxruntime-gpu==1.17.0      # GPU inference (Phase 2, comment out if no GPU)
+scikit-learn==1.4.0
+numpy==1.26.4
+pandas==2.2.0
+
+# ─── API ─────────────────────────────────────────────────────────────────────
+fastapi==0.110.0
+uvicorn[standard]==0.27.0
+pydantic==2.6.0
+
+# ─── NLP / Text Analysis ─────────────────────────────────────────────────────
+transformers==4.38.0
+wordfreq==3.1.1               # vocabulary_analyzer.py — top-3000 common words
+tokenizers==0.15.2
+
+# ─── Signal Processing ───────────────────────────────────────────────────────
+scipy==1.12.0
+
+# ─── Model Tracking ──────────────────────────────────────────────────────────
+mlflow==2.11.0
+
+# ─── Phase 2: Computer Vision (uncomment when starting Phase 2) ──────────────
+# mediapipe==0.10.9           # Face mesh — 468 landmarks
+# opencv-python==4.9.0.80     # Video frame processing
+
+# ─── Phase 2: Audio Analysis (uncomment when starting Phase 2) ───────────────
+# librosa==0.10.1             # Acoustic feature extraction
+# soundfile==0.12.1           # Audio file I/O
+# pyworld==0.3.4              # F0 and spectral extraction for shimmer/jitter
+
+# ─── Testing ─────────────────────────────────────────────────────────────────
+pytest==8.0.0
+pytest-asyncio==0.23.5
+httpx==0.27.0                 # For testing FastAPI endpoints

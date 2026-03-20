@@ -1,0 +1,77 @@
+name: Security Scan (Weekly)
+
+on:
+  schedule:
+    - cron: "0 2 * * 1"    # Every Monday 2am UTC
+  workflow_dispatch:         # Manual trigger
+
+jobs:
+  dependency-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python dependency audit (Safety)
+        run: |
+          pip install safety
+          safety check -r backend/requirements.txt --full-report
+          safety check -r ml_engine/requirements.txt --full-report
+
+      - name: npm audit — dashboard
+        run: |
+          cd dashboard && npm audit --audit-level=moderate
+
+      - name: npm audit — browser SDK
+        run: |
+          cd sdk/browser && npm audit --audit-level=moderate
+
+  container-scan:
+    name: Container Image Scan (Trivy)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image for scanning
+        run: |
+          docker build -f infrastructure/docker/backend.Dockerfile \
+            --target production -t humaneye/backend:scan .
+
+      - name: Trivy — backend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: humaneye/backend:scan
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 1
+
+      - name: Build ML engine image for scanning
+        run: |
+          docker build -f infrastructure/docker/ml_engine.Dockerfile \
+            --target production -t humaneye/ml-engine:scan .
+
+      - name: Trivy — ML engine image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: humaneye/ml-engine:scan
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: 1
+
+  secrets-scan:
+    name: Secrets Scan (TruffleHog)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history for secret scanning
+
+      - name: TruffleHog — scan for leaked secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          extra_args: --only-verified

@@ -1,0 +1,121 @@
+# ============================================================
+# HumanEye — Kubernetes Namespace + RBAC
+# Apply first: kubectl apply -f k8s/namespace.yaml
+# ============================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: humaneye
+  labels:
+    project: humaneye
+    managed-by: terraform
+
+---
+# ── Service Accounts ──────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: humaneye-backend
+  namespace: humaneye
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/humaneye-backend-irsa
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: humaneye-ml-engine
+  namespace: humaneye
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/humaneye-ml-engine-irsa
+
+---
+# ── Network Policy — isolate services ─────────────────────
+# ML engine only accepts traffic from backend
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ml-engine-ingress
+  namespace: humaneye
+spec:
+  podSelector:
+    matchLabels:
+      app: ml-engine
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - protocol: TCP
+          port: 8001
+
+---
+# Backend accepts traffic from ingress controller only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-ingress
+  namespace: humaneye
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+
+---
+# ── Resource Quotas ───────────────────────────────────────
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: humaneye-quota
+  namespace: humaneye
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: "16Gi"
+    limits.cpu: "16"
+    limits.memory: "32Gi"
+    pods: "20"
+
+---
+# ── NGINX Ingress ─────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: humaneye-ingress
+  namespace: humaneye
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  tls:
+    - hosts:
+        - api.humaneye.io
+      secretName: humaneye-tls
+  rules:
+    - host: api.humaneye.io
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: humaneye-backend
+                port:
+                  number: 8000

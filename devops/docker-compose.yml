@@ -1,0 +1,316 @@
+version: "3.9"
+
+# ============================================================
+# HumanEye — Local Development Environment
+# Run everything with: docker-compose up
+# ============================================================
+
+services:
+
+  # ── Backend (FastAPI) ─────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/backend.Dockerfile
+      target: development
+    container_name: humaneye-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend
+    environment:
+      - ENV=development
+      - DATABASE_URL=postgresql+asyncpg://humaneye:humaneye_dev@postgres:5432/humaneye
+      - TIMESCALE_URL=postgresql+asyncpg://humaneye:humaneye_dev@timescaledb:5432/humaneye_signals
+      - REDIS_URL=redis://redis:6379/0
+      - ML_ENGINE_URL=http://ml_engine:8001
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=dev-root-token
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - ALLOWED_ORIGINS=http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── ML Engine (PyTorch detection) ─────────────────────────
+  # Port 8001 is NOT published to host as 8001 publicly accessible —
+  # only backend can reach it through the internal Docker network.
+  # (We expose it mapped to 8001 on loopback only for local dev debugging)
+  ml_engine:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/ml_engine.Dockerfile
+      target: development
+    container_name: humaneye-ml
+    ports:
+      - "127.0.0.1:8001:8001"    # localhost only — matches "internal only" requirement
+    volumes:
+      - ./ml_engine:/app/ml_engine                          # hot reload in dev
+      - ml_models:/app/ml_engine/saved_models               # PERSISTENT — models survive restarts
+      - hf_cache:/app/.cache/huggingface                    # PERSISTENT — HuggingFace model cache
+    environment:
+      # ── All env vars per ML engineer specification ──────
+      - ML_ENGINE_PORT=8001
+      - ML_ENGINE_WORKERS=2
+      - ML_TRACKING_URI=http://mlflow:5000
+      - TRANSFORMERS_CACHE=/app/.cache/huggingface
+      - MODEL_DIR=/app/ml_engine/saved_models
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+      - TORCH_HOME=/app/ml_engine/saved_models/.torch_cache
+      # ── Database / infra ────────────────────────────────
+      - TIMESCALE_URL=postgresql+asyncpg://humaneye:humaneye_dev@timescaledb:5432/humaneye_signals
+      - REDIS_URL=redis://redis:6379/1
+      - S3_BUCKET=humaneye-models-dev
+    # ── GPU passthrough (Phase 2 / developers with NVIDIA GPU) ──
+    # Uncomment the deploy block below if you have an NVIDIA GPU locally.
+    # Requires nvidia-container-toolkit installed on your machine.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+    # ML spec: startup ~30s → start_period=45s, timeout=10s, period=30s
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  # ── Dashboard (Next.js) ───────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/dashboard.Dockerfile
+      target: development
+    container_name: humaneye-dashboard
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./dashboard:/app/dashboard
+      - /app/dashboard/node_modules
+      - /app/dashboard/.next
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_WS_URL=ws://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+
+  # ── PostgreSQL (primary data) ─────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: humaneye-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: humaneye
+      POSTGRES_USER: humaneye
+      POSTGRES_PASSWORD: humaneye_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/init-scripts/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U humaneye -d humaneye"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── TimescaleDB (behavioral signals time-series) ──────────
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: humaneye-timescaledb
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: humaneye_signals
+      POSTGRES_USER: humaneye
+      POSTGRES_PASSWORD: humaneye_dev
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/init-scripts/timescale-init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U humaneye -d humaneye_signals"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Redis (cache + rate limiting + sessions) ──────────────
+  redis:
+    image: redis:7-alpine
+    container_name: humaneye-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./infrastructure/docker/redis.conf:/etc/redis/redis.conf
+    command: redis-server /etc/redis/redis.conf
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Celery worker (async ML processing + webhooks) ────────
+  celery:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/backend.Dockerfile
+      target: development
+    container_name: humaneye-celery
+    command: celery -A backend.core.celery_app worker --loglevel=info --concurrency=4
+    volumes:
+      - ./backend:/app/backend
+    environment:
+      - ENV=development
+      - DATABASE_URL=postgresql+asyncpg://humaneye:humaneye_dev@postgres:5432/humaneye
+      - REDIS_URL=redis://redis:6379/0
+      - ML_ENGINE_URL=http://ml_engine:8001
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+
+  # ── Celery Beat (scheduled tasks) ─────────────────────────
+  celery_beat:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/backend.Dockerfile
+      target: development
+    container_name: humaneye-celery-beat
+    command: celery -A backend.core.celery_app beat --loglevel=info
+    volumes:
+      - ./backend:/app/backend
+    environment:
+      - ENV=development
+      - DATABASE_URL=postgresql+asyncpg://humaneye:humaneye_dev@postgres:5432/humaneye
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+
+  # ── MLflow (model experiment tracking) ───────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.10.0
+    container_name: humaneye-mlflow
+    ports:
+      - "5000:5000"
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri postgresql://humaneye:humaneye_dev@postgres:5432/mlflow
+      --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+
+  # ── HashiCorp Vault (secrets — dev mode) ─────────────────
+  vault:
+    image: hashicorp/vault:1.15
+    container_name: humaneye-vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+
+  # ── Prometheus (metrics collection) ───────────────────────
+  prometheus:
+    image: prom/prometheus:v2.49.0
+    container_name: humaneye-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/docker/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+
+  # ── Grafana (metrics dashboard) ───────────────────────────
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: humaneye-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/docker/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./infrastructure/docker/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus
+    networks:
+      - humaneye-net
+    restart: unless-stopped
+
+# ── Volumes ───────────────────────────────────────────────
+volumes:
+  postgres_data:
+  timescale_data:
+  redis_data:
+  ml_models:            # Persistent — ML model .pt files survive restarts
+  hf_cache:             # Persistent — HuggingFace Transformers cache
+  mlflow_artifacts:
+  prometheus_data:
+  grafana_data:
+
+# ── Networks ──────────────────────────────────────────────
+networks:
+  humaneye-net:
+    driver: bridge

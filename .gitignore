@@ -1,0 +1,12 @@
+/venv
+venv/
+CLAUDE.md
+
+node_modules/
+.pnpm-store/
+.next/
+dist/
+build/
+.env
+
+frontend/dashboard/node_modules/

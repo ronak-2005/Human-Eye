@@ -1,0 +1,366 @@
+name: HumanEye CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+
+jobs:
+  # ── Stage 1: Lint ────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python linters
+        run: pip install black isort flake8
+
+      - name: Black (backend)
+        run: black --check backend/
+
+      - name: Black (ml_engine)
+        run: black --check ml_engine/
+
+      - name: isort
+        run: isort --check-only backend/ ml_engine/
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dashboard deps
+        run: cd dashboard && npm ci
+
+      - name: ESLint (dashboard)
+        run: cd dashboard && npm run lint
+
+      - name: TypeScript check
+        run: cd dashboard && npm run type-check
+
+  # ── Stage 2: Test ────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: humaneye_test
+          POSTGRES_USER: humaneye
+          POSTGRES_PASSWORD: test_password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      timescaledb:
+        image: timescale/timescaledb:latest-pg15
+        env:
+          POSTGRES_DB: humaneye_signals_test
+          POSTGRES_USER: humaneye
+          POSTGRES_PASSWORD: test_password
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install backend deps
+        run: pip install -r backend/requirements.txt -r backend/requirements-test.txt
+
+      - name: Run backend tests
+        env:
+          ENV: test
+          DATABASE_URL: postgresql+asyncpg://humaneye:test_password@localhost:5432/humaneye_test
+          TIMESCALE_URL: postgresql+asyncpg://humaneye:test_password@localhost:5433/humaneye_signals_test
+          REDIS_URL: redis://localhost:6379/0
+          ML_ENGINE_URL: http://localhost:8001
+          SECRET_KEY: test-secret-key
+        run: |
+          cd backend
+          pytest tests/ -v \
+            --cov=. \
+            --cov-report=xml \
+            --cov-fail-under=70 \
+            -x
+
+      - name: Install ML engine deps
+        run: pip install -r ml_engine/requirements.txt -r ml_engine/requirements-test.txt
+
+      - name: Run ML engine tests
+        env:
+          ENV: test
+          TIMESCALE_URL: postgresql+asyncpg://humaneye:test_password@localhost:5433/humaneye_signals_test
+          REDIS_URL: redis://localhost:6379/1
+        run: |
+          cd ml_engine
+          pytest tests/ -v -x
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: backend/coverage.xml
+
+  # ── Stage 3: Security Scan ───────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: lint
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Bandit
+        run: pip install bandit[toml]
+
+      - name: Bandit — backend
+        run: bandit -r backend/ -c pyproject.toml -ll
+
+      - name: Bandit — ml_engine
+        run: bandit -r ml_engine/ -c pyproject.toml -ll
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: npm audit (dashboard)
+        run: |
+          cd dashboard
+          npm ci
+          npm audit --audit-level=high
+
+      - name: npm audit (sdk)
+        run: |
+          cd sdk/browser
+          npm ci
+          npm audit --audit-level=high
+
+  # ── Stage 4: Build Docker Images ─────────────────────────
+  build:
+    name: Build Images
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    if: github.event_name == 'push'
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=$(echo ${{ github.sha }} | cut -c1-8)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build + push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/backend.Dockerfile
+          target: production
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/humaneye/backend:${{ steps.meta.outputs.image_tag }}
+            ${{ env.ECR_REGISTRY }}/humaneye/backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build + push ml_engine
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/ml_engine.Dockerfile
+          target: production
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/humaneye/ml-engine:${{ steps.meta.outputs.image_tag }}
+            ${{ env.ECR_REGISTRY }}/humaneye/ml-engine:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build + push dashboard
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/dashboard.Dockerfile
+          target: production
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/humaneye/dashboard:${{ steps.meta.outputs.image_tag }}
+            ${{ env.ECR_REGISTRY }}/humaneye/dashboard:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Stage 5: Deploy to Staging ───────────────────────────
+  deploy-staging:
+    name: Deploy → Staging
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/develop'
+    environment: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run DB migrations (staging)
+        run: |
+          aws ecs run-task \
+            --cluster humaneye-cluster-staging \
+            --task-definition humaneye-backend-staging \
+            --overrides '{"containerOverrides":[{"name":"backend","command":["alembic","upgrade","head"]}]}' \
+            --launch-type FARGATE \
+            --network-configuration "${{ secrets.ECS_NETWORK_CONFIG }}" \
+            --wait-for-completion
+
+      - name: Deploy backend to staging
+        run: |
+          aws ecs update-service \
+            --cluster humaneye-cluster-staging \
+            --service humaneye-backend-staging \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Deploy ml_engine to staging
+        run: |
+          aws ecs update-service \
+            --cluster humaneye-cluster-staging \
+            --service humaneye-ml-engine-staging \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Wait for staging deploy
+        run: |
+          aws ecs wait services-stable \
+            --cluster humaneye-cluster-staging \
+            --services humaneye-backend-staging humaneye-ml-engine-staging
+
+      - name: Smoke tests (staging)
+        run: |
+          sleep 10
+          curl -f https://staging-api.humaneye.io/api/v1/health || exit 1
+          echo "Staging health check passed"
+
+  # ── Stage 6: Deploy to Production (manual approval) ──────
+  deploy-production:
+    name: Deploy → Production
+    runs-on: ubuntu-latest
+    needs: [build, deploy-staging]
+    if: github.ref == 'refs/heads/main'
+    environment: production        # Requires manual approval in GitHub
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run DB migrations (production)
+        run: |
+          aws ecs run-task \
+            --cluster humaneye-cluster-production \
+            --task-definition humaneye-backend-production \
+            --overrides '{"containerOverrides":[{"name":"backend","command":["alembic","upgrade","head"]}]}' \
+            --launch-type FARGATE \
+            --network-configuration "${{ secrets.ECS_NETWORK_CONFIG_PROD }}" \
+            --wait-for-completion
+
+      - name: Deploy backend to production
+        run: |
+          aws ecs update-service \
+            --cluster humaneye-cluster-production \
+            --service humaneye-backend-production \
+            --force-new-deployment
+
+      - name: Deploy ml_engine to production
+        run: |
+          aws ecs update-service \
+            --cluster humaneye-cluster-production \
+            --service humaneye-ml-engine-production \
+            --force-new-deployment
+
+      - name: Wait for production deploy
+        run: |
+          aws ecs wait services-stable \
+            --cluster humaneye-cluster-production \
+            --services humaneye-backend-production humaneye-ml-engine-production
+
+      - name: Production smoke test
+        run: |
+          sleep 15
+          curl -f https://api.humaneye.io/api/v1/health || exit 1
+          echo "Production health check passed"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Production deploy FAILED. Triggering rollback..."
+          aws ecs update-service \
+            --cluster humaneye-cluster-production \
+            --service humaneye-backend-production \
+            --task-definition humaneye-backend-production:${{ github.run_number - 1 }}

@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HumanEye — Demo Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0b0f;
+    --surface: #111318;
+    --surface2: #181b22;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.13);
+    --text: #e8eaf0;
+    --muted: #7a7f8e;
+    --accent: #3d8ef0;
+    --accent2: #5ba3ff;
+    --green: #22c97a;
+    --amber: #f0a23d;
+    --red: #f05252;
+    --mono: 'DM Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  /* ── Topbar ── */
+  .topbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: 52px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: -0.3px;
+  }
+  .logo-mark {
+    width: 28px; height: 28px;
+    background: var(--accent);
+    border-radius: 6px;
+    display: grid;
+    place-items: center;
+  }
+  .logo-mark svg { width: 16px; height: 16px; }
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .api-key-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 5px;
+    padding: 5px 10px;
+    color: var(--muted);
+  }
+  .api-key-badge span { color: var(--accent2); }
+  .status-dot {
+    width: 8px; height: 8px;
+    background: var(--green);
+    border-radius: 50%;
+    box-shadow: 0 0 0 3px rgba(34,201,122,0.15);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 3px rgba(34,201,122,0.15)} 50%{box-shadow:0 0 0 6px rgba(34,201,122,0.05)} }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 20px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 20px;
+    color: var(--muted);
+    cursor: pointer;
+    border-radius: 0;
+    font-size: 13.5px;
+    transition: all 0.15s;
+    border-left: 2px solid transparent;
+  }
+  .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+  .nav-item.active { color: var(--accent2); border-left-color: var(--accent); background: rgba(61,142,240,0.06); }
+  .nav-icon { width: 16px; height: 16px; opacity: 0.7; }
+  .nav-section {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    padding: 16px 20px 6px;
+  }
+
+  /* ── Main content ── */
+  .main {
+    padding: 28px 32px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+  .page-title { font-size: 20px; font-weight: 600; letter-spacing: -0.3px; }
+  .page-sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
+
+  /* ── Metric cards ── */
+  .metric-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+  }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .metric-label {
+    font-size: 11.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .metric-value {
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+  .metric-sub {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+  .metric-sub.up { color: var(--green); }
+  .metric-sub.down { color: var(--red); }
+
+  /* ── Live demo panel ── */
+  .demo-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .demo-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .demo-title { font-weight: 500; font-size: 14px; }
+  .live-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(34,201,122,0.1);
+    border: 1px solid rgba(34,201,122,0.25);
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--green);
+  }
+  .demo-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+  }
+  .demo-input {
+    padding: 20px;
+    border-right: 1px solid var(--border);
+  }
+  .demo-result { padding: 20px; }
+  .demo-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .demo-textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border2);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 13px;
+    padding: 12px 14px;
+    resize: none;
+    height: 140px;
+    line-height: 1.6;
+    transition: border-color 0.2s;
+    outline: none;
+  }
+  .demo-textarea:focus { border-color: var(--accent); }
+  .demo-btn {
+    margin-top: 12px;
+    width: 100%;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    padding: 10px;
+    font-family: var(--sans);
+    font-size: 13.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+  .demo-btn:hover { opacity: 0.9; }
+  .demo-btn:active { transform: scale(0.98); }
+  .demo-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Score gauge */
+  .score-display {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 10px 0 20px;
+  }
+  .score-ring {
+    position: relative;
+    width: 120px;
+    height: 120px;
+  }
+  .score-ring svg { transform: rotate(-90deg); }
+  .score-number {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .score-num { font-size: 30px; font-weight: 600; letter-spacing: -1px; }
+  .score-label { font-size: 10px; color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+  .verdict-badge {
+    margin-top: 14px;
+    padding: 6px 18px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .verdict-human { background: rgba(34,201,122,0.12); color: var(--green); border: 1px solid rgba(34,201,122,0.25); }
+  .verdict-suspicious { background: rgba(240,162,61,0.12); color: var(--amber); border: 1px solid rgba(240,162,61,0.25); }
+  .verdict-blocked { background: rgba(240,82,82,0.12); color: var(--red); border: 1px solid rgba(240,82,82,0.25); }
+
+  .signal-bars { margin-top: 16px; width: 100%; }
+  .signal-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .signal-name { width: 80px; font-size: 12px; color: var(--muted); }
+  .signal-bar-bg {
+    flex: 1;
+    height: 5px;
+    background: var(--surface2);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .signal-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.6s cubic-bezier(0.4,0,0.2,1);
+  }
+  .signal-val { width: 30px; text-align: right; font-size: 12px; font-family: var(--mono); color: var(--muted); }
+
+  /* ── Verifications table ── */
+  .table-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .table-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  th {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 12px 20px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .mono { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .score-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    padding: 3px 0;
+    border-radius: 5px;
+    font-weight: 600;
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+  .pill-high { background: rgba(34,201,122,0.12); color: var(--green); }
+  .pill-mid  { background: rgba(240,162,61,0.12); color: var(--amber); }
+  .pill-low  { background: rgba(240,82,82,0.12);  color: var(--red);   }
+  .verdict-tag {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  /* ── Flags ── */
+  .flag-tag {
+    display: inline-block;
+    font-size: 10.5px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: rgba(240,82,82,0.1);
+    color: var(--red);
+    border: 1px solid rgba(240,82,82,0.2);
+    margin-right: 4px;
+  }
+
+  /* ── Loading ── */
+  .spinner {
+    display: inline-block;
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.1);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty-state {
+    text-align: center;
+    padding: 40px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<!-- Topbar -->
+<header class="topbar">
+  <div class="logo">
+    <div class="logo-mark">
+      <svg viewBox="0 0 16 16" fill="none">
+        <circle cx="8" cy="8" r="5" stroke="white" stroke-width="1.5"/>
+        <circle cx="8" cy="8" r="2" fill="white"/>
+      </svg>
+    </div>
+    HumanEye
+  </div>
+  <div class="topbar-right">
+    <div class="api-key-badge">he_live_<span>demo••••••••</span></div>
+    <div class="status-dot" title="API Online"></div>
+  </div>
+</header>
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <div class="nav-section">Overview</div>
+  <div class="nav-item active" onclick="showPage('dashboard')">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
+    Dashboard
+  </div>
+  <div class="nav-item" onclick="showPage('verifications')">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 4h12M2 8h8M2 12h10"/></svg>
+    Verifications
+  </div>
+  <div class="nav-section">Developer</div>
+  <div class="nav-item" onclick="showPage('demo')">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 2"/></svg>
+    Live demo
+  </div>
+  <div class="nav-item" onclick="openDocs()">
+    <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z"/><path d="M5 6h6M5 9h4"/></svg>
+    API docs
+  </div>
+</nav>
+
+<!-- Main -->
+<main class="main" id="main-content">
+
+  <!-- Dashboard page -->
+  <div id="page-dashboard">
+    <div class="page-header">
+      <div>
+        <div class="page-title">Dashboard</div>
+        <div class="page-sub">Acme HR Platform · last 5 days</div>
+      </div>
+    </div>
+
+    <div class="metric-grid" id="metrics">
+      <div class="metric-card">
+        <div class="metric-label">Total verifications</div>
+        <div class="metric-value" id="m-total">—</div>
+        <div class="metric-sub">all time</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Today</div>
+        <div class="metric-value" id="m-today">—</div>
+        <div class="metric-sub up" id="m-today-sub">loading...</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Avg trust score</div>
+        <div class="metric-value" id="m-score">—</div>
+        <div class="metric-sub">out of 100</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">AI detected</div>
+        <div class="metric-value" id="m-blocked">—</div>
+        <div class="metric-sub down">blocked / flagged</div>
+      </div>
+    </div>
+
+    <!-- Live demo panel -->
+    <div class="demo-panel">
+      <div class="demo-header">
+        <span class="demo-title">Live verification</span>
+        <div class="live-badge">
+          <div class="status-dot" style="width:6px;height:6px;box-shadow:none"></div>
+          Live
+        </div>
+      </div>
+      <div class="demo-body">
+        <div class="demo-input">
+          <div class="demo-label">Submit a cover letter to verify</div>
+          <textarea class="demo-textarea" id="cover-letter-input" placeholder="Paste a cover letter or any text here. HumanEye will analyze it for AI-generated patterns, behavioral signals, and human authenticity markers..."></textarea>
+          <button class="demo-btn" id="verify-btn" onclick="runVerification()">
+            Verify now
+          </button>
+          <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap">
+            <button onclick="loadSample('human')" style="background:var(--surface2);border:1px solid var(--border2);color:var(--muted);border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer">Load human sample</button>
+            <button onclick="loadSample('ai')" style="background:var(--surface2);border:1px solid var(--border2);color:var(--muted);border-radius:5px;padding:5px 10px;font-size:12px;cursor:pointer">Load AI sample</button>
+          </div>
+        </div>
+        <div class="demo-result">
+          <div class="demo-label">Result</div>
+          <div class="score-display" id="score-display">
+            <div class="score-ring">
+              <svg width="120" height="120" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="50" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="8"/>
+                <circle id="score-arc" cx="60" cy="60" r="50" fill="none"
+                  stroke="#3d8ef0" stroke-width="8" stroke-linecap="round"
+                  stroke-dasharray="314" stroke-dashoffset="314"
+                  style="transition: stroke-dashoffset 0.8s cubic-bezier(0.4,0,0.2,1), stroke 0.4s"/>
+              </svg>
+              <div class="score-number">
+                <div class="score-num" id="score-num">—</div>
+                <div class="score-label">score</div>
+              </div>
+            </div>
+            <div class="verdict-badge verdict-human" id="verdict-badge" style="display:none"></div>
+            <div class="signal-bars" id="signal-bars" style="display:none">
+              <div class="signal-row">
+                <span class="signal-name">Keystroke</span>
+                <div class="signal-bar-bg"><div class="signal-bar-fill" id="bar-behavioral" style="width:0%;background:var(--accent)"></div></div>
+                <span class="signal-val" id="val-behavioral">—</span>
+              </div>
+              <div class="signal-row">
+                <span class="signal-name">Text</span>
+                <div class="signal-bar-bg"><div class="signal-bar-fill" id="bar-text" style="width:0%;background:var(--accent)"></div></div>
+                <span class="signal-val" id="val-text">—</span>
+              </div>
+              <div class="signal-row">
+                <span class="signal-name">Mouse</span>
+                <div class="signal-bar-bg"><div class="signal-bar-fill" id="bar-mouse" style="width:0%;background:var(--accent)"></div></div>
+                <span class="signal-val" id="val-mouse">—</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent verifications -->
+    <div class="table-panel">
+      <div class="table-header">
+        <span style="font-weight:500">Recent verifications</span>
+        <span style="font-size:12px;color:var(--muted)" id="table-count"></span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Score</th>
+            <th>Verdict</th>
+            <th>Flags</th>
+            <th>Time</th>
+            <th>When</th>
+          </tr>
+        </thead>
+        <tbody id="verifications-tbody">
+          <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<script>
+const API = 'http://localhost:8000';
+const KEY = 'he_demo_dashboard';
+
+async function apiFetch(path, opts={}) {
+  try {
+    const r = await fetch(API + path, {
+      headers: { 'Authorization': `Bearer ${KEY}`, 'Content-Type': 'application/json', ...opts.headers },
+      ...opts
+    });
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  } catch(e) {
+    console.warn('API error:', e);
+    return null;
+  }
+}
+
+async function loadStats() {
+  const data = await apiFetch('/api/v1/stats');
+  if (!data) {
+    document.getElementById('m-total').textContent = '120';
+    document.getElementById('m-today').textContent = '14';
+    document.getElementById('m-today-sub').textContent = '+14 today';
+    document.getElementById('m-score').textContent = '79';
+    document.getElementById('m-blocked').textContent = '18';
+    return;
+  }
+  document.getElementById('m-total').textContent = data.total?.toLocaleString() ?? '—';
+  document.getElementById('m-today').textContent = data.today ?? '—';
+  document.getElementById('m-score').textContent = data.avg_score ?? '—';
+  document.getElementById('m-blocked').textContent = data.blocked_today ?? '—';
+  const pct = data.human_pct;
+  if (pct) document.getElementById('m-today-sub').textContent = `${pct}% human`;
+}
+
+async function loadVerifications() {
+  const data = await apiFetch('/api/v1/verifications?limit=10');
+  const tbody = document.getElementById('verifications-tbody');
+
+  const items = data?.verifications ?? generateDemoRows();
+  document.getElementById('table-count').textContent = items.length + ' shown';
+
+  tbody.innerHTML = items.map(v => {
+    const score = v.score ?? 0;
+    const pillClass = score >= 70 ? 'pill-high' : score >= 45 ? 'pill-mid' : 'pill-low';
+    const verdict = v.verdict ?? 'human';
+    const vClass = verdict === 'human' ? 'var(--green)' : verdict === 'suspicious' ? 'var(--amber)' : 'var(--red)';
+    const vBg = verdict === 'human' ? 'rgba(34,201,122,0.1)' : verdict === 'suspicious' ? 'rgba(240,162,61,0.1)' : 'rgba(240,82,82,0.1)';
+    const sid = (v.session_id ?? 'sess_demo').slice(0, 12) + '…';
+    const ms = v.processing_time_ms ?? '—';
+    const when = v.created_at ? timeAgo(new Date(v.created_at)) : 'just now';
+    const flags = (v.flags && v.flags.length > 0 && v.flags !== '[]')
+      ? (Array.isArray(v.flags) ? v.flags : JSON.parse(v.flags || '[]'))
+          .map(f => `<span class="flag-tag">${f.replace(/_/g,' ')}</span>`).join('')
+      : '<span style="color:var(--muted);font-size:12px">none</span>';
+
+    return `<tr>
+      <td class="mono">${sid}</td>
+      <td><span class="score-pill ${pillClass}">${score}</span></td>
+      <td><span class="verdict-tag" style="background:${vBg};color:${vClass}">${verdict}</span></td>
+      <td>${flags}</td>
+      <td class="mono">${ms}ms</td>
+      <td style="color:var(--muted)">${when}</td>
+    </tr>`;
+  }).join('');
+}
+
+function generateDemoRows() {
+  const verdicts = ['human','human','human','human','human','human','human','suspicious','blocked','human'];
+  return verdicts.map((v,i) => ({
+    session_id: 'sess_' + Math.random().toString(36).slice(2,10),
+    score: v === 'human' ? 75+Math.floor(Math.random()*20) : v === 'suspicious' ? 45+Math.floor(Math.random()*15) : 10+Math.floor(Math.random()*20),
+    verdict: v,
+    flags: v === 'human' ? [] : v === 'suspicious' ? ['elevated_ai_vocabulary'] : ['keystroke_variance_critical','ai_vocabulary_pattern_detected'],
+    processing_time_ms: 80+Math.floor(Math.random()*120),
+    created_at: new Date(Date.now() - i*3600000).toISOString()
+  }));
+}
+
+function timeAgo(date) {
+  const diff = Date.now() - date.getTime();
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h/24)}d ago`;
+}
+
+// ── Live verification ─────────────────────────────────────────────────────
+
+// Capture keystrokes silently while user types
+const keystrokes = [];
+let typingStart = null;
+document.getElementById('cover-letter-input').addEventListener('keydown', e => {
+  if (!typingStart) typingStart = performance.now();
+  keystrokes.push({ code: e.code, down_time: performance.now() - typingStart });
+});
+document.getElementById('cover-letter-input').addEventListener('keyup', e => {
+  const last = keystrokes.findLast(k => k.code === e.code && !k.up_time);
+  if (last) last.up_time = performance.now() - typingStart;
+});
+
+async function runVerification() {
+  const text = document.getElementById('cover-letter-input').value.trim();
+  if (!text && keystrokes.length < 5) {
+    alert('Type or paste some text first.');
+    return;
+  }
+  const btn = document.getElementById('verify-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Analyzing...';
+
+  const payload = {
+    session_id: 'sess_demo_' + Date.now(),
+    signals: {
+      keystrokes: keystrokes.filter(k => k.up_time).slice(-200),
+      mouse_events: [],
+      scroll_events: [],
+      text_content: text
+    },
+    context: {
+      action_type: 'job_application',
+      platform_user_id: 'demo_user'
+    }
+  };
+
+  const result = await apiFetch('/api/v1/verify', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+
+  btn.disabled = false;
+  btn.textContent = 'Verify now';
+
+  // If API is down, generate a demo result
+  const res = result ?? demoScore(text, keystrokes);
+  displayResult(res);
+  loadVerifications();
+}
+
+function demoScore(text, keystrokes) {
+  const words = text.toLowerCase().split(/\s+/);
+  const aiWords = ['furthermore','moreover','leveraging','synergize','utilize','robust','passionate','dedicated'];
+  const aiCount = words.filter(w => aiWords.includes(w)).length;
+  const aiDensity = aiCount / Math.max(words.length, 1);
+
+  const behavioral = keystrokes.length > 15 ? 0.82 : 0.55;
+  const textScore = aiDensity > 0.04 ? 0.2 : aiDensity > 0.02 ? 0.5 : 0.85;
+  const combined = Math.round((behavioral * 0.4 + textScore * 0.6) * 100);
+
+  return {
+    score: combined,
+    verdict: combined >= 65 ? 'human' : combined >= 40 ? 'suspicious' : 'blocked',
+    confidence: combined >= 80 || combined < 25 ? 'high' : 'medium',
+    flags: aiDensity > 0.04 ? ['ai_vocabulary_pattern_detected'] : [],
+    behavioral_score: behavioral,
+    text_score: textScore,
+    mouse_score: 0.65,
+    processing_time_ms: 142
+  };
+}
+
+function displayResult(res) {
+  const score = res.score ?? 0;
+  const circumference = 314;
+  const offset = circumference - (score / 100) * circumference;
+  const arc = document.getElementById('score-arc');
+  arc.style.strokeDashoffset = offset;
+  arc.style.stroke = score >= 65 ? 'var(--green)' : score >= 40 ? 'var(--amber)' : 'var(--red)';
+
+  document.getElementById('score-num').textContent = score;
+
+  const badge = document.getElementById('verdict-badge');
+  badge.style.display = 'inline-flex';
+  badge.className = 'verdict-badge verdict-' + (res.verdict ?? 'human');
+  badge.textContent = (res.verdict ?? 'human').charAt(0).toUpperCase() + (res.verdict ?? 'human').slice(1);
+
+  const bars = document.getElementById('signal-bars');
+  bars.style.display = 'block';
+
+  const behavioral = Math.round((res.behavioral_score ?? 0.7) * 100);
+  const textS = Math.round((res.text_score ?? 0.7) * 100);
+  const mouseS = Math.round((res.mouse_score ?? 0.65) * 100);
+
+  setBar('behavioral', behavioral);
+  setBar('text', textS);
+  setBar('mouse', mouseS);
+}
+
+function setBar(id, val) {
+  const color = val >= 65 ? 'var(--green)' : val >= 40 ? 'var(--amber)' : 'var(--red)';
+  document.getElementById('bar-' + id).style.width = val + '%';
+  document.getElementById('bar-' + id).style.background = color;
+  document.getElementById('val-' + id).textContent = val;
+}
+
+const humanSample = `Last month I finally shipped the feature I'd been putting off — a migration that touched 14 tables and I was terrified of breaking the reporting pipeline. Stayed up until 2am on a Tuesday running test cases with my laptop fan screaming. The thing is, it actually worked first try in staging and I nearly fell off my chair. I've been at my current company for two years now and I think I'm ready for something bigger. I noticed your job post mentions the same Postgres version we use, and the problem you're working on — detecting synthetic behavior patterns — is genuinely interesting to me. I wrote a rough behavioral clustering thing for a side project and got obsessed with the edge cases.`;
+
+const aiSample = `I am writing to express my strong interest in the Software Engineer position at your esteemed organization. With a proven track record of delivering high-quality software solutions and a demonstrated ability to leverage cutting-edge technologies, I am confident that my skills and expertise align perfectly with your requirements. Throughout my career, I have consistently demonstrated exceptional proficiency in developing robust and scalable applications. I am passionate about innovation and am dedicated to driving excellence in all aspects of my work. Furthermore, I am a proactive team player who thrives in dynamic environments and excels at synergizing with cross-functional stakeholders to achieve strategic organizational objectives.`;
+
+function loadSample(type) {
+  document.getElementById('cover-letter-input').value = type === 'human' ? humanSample : aiSample;
+  keystrokes.length = 0;
+}
+
+function showPage(p) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  event.target.closest('.nav-item').classList.add('active');
+}
+
+function openDocs() {
+  window.open('http://localhost:8000/docs', '_blank');
+}
+
+// Init
+loadStats();
+loadVerifications();
+setInterval(loadVerifications, 10000);
+</script>
+</body>
+</html>

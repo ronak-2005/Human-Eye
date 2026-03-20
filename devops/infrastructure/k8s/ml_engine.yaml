@@ -1,0 +1,257 @@
+# ============================================================
+# HumanEye — Kubernetes ML Engine Deployment (Phase 2 — EKS)
+#
+# Implements ML engineer requirements exactly:
+#   resources  : 2 vCPU req / 4 vCPU limit  |  4 GB req / 8 GB limit
+#   liveness   : GET /health, timeout=10s, period=30s
+#   readiness  : GET /health, check phase1_ready=true, initialDelay=30s
+#   startup    : initialDelaySeconds=45 (models take ~30s to load)
+#   port 8001  : INTERNAL ONLY — NetworkPolicy blocks all external access
+#   model dir  : persistent PVC mount at /app/ml_engine/saved_models
+#   logging    : structured JSON to stdout → CloudWatch
+#   GPU Phase 2: g4dn.xlarge (NVIDIA T4)
+# ============================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: humaneye-ml-engine
+  namespace: humaneye
+  labels:
+    app: ml-engine
+    project: humaneye
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ml-engine
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: ml-engine
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8001"
+    spec:
+      serviceAccountName: humaneye-ml-engine
+      terminationGracePeriodSeconds: 60
+
+      # Phase 1: CPU nodes
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      # Phase 2 GPU — uncomment:
+      # nodeSelector:
+      #   node.kubernetes.io/instance-type: g4dn.xlarge
+      # tolerations:
+      #   - key: "nvidia.com/gpu"
+      #     operator: "Exists"
+      #     effect: "NoSchedule"
+
+      containers:
+        - name: ml-engine
+          image: ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/humaneye/ml-engine:latest
+          ports:
+            - containerPort: 8001
+              name: http
+
+          env:
+            - name: ML_ENGINE_PORT
+              value: "8001"
+            - name: ML_ENGINE_WORKERS
+              value: "2"
+            - name: ML_TRACKING_URI
+              value: "http://humaneye-mlflow:5000"
+            - name: TRANSFORMERS_CACHE
+              value: "/app/.cache/huggingface"
+            - name: MODEL_DIR
+              value: "/app/ml_engine/saved_models"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: ENVIRONMENT
+              value: "production"
+            - name: TORCH_HOME
+              value: "/app/ml_engine/saved_models/.torch_cache"
+          envFrom:
+            - secretRef:
+                name: humaneye-ml-engine-secrets
+
+          # ML engineer spec: 2 vCPU req / 4 vCPU limit  |  4 GB req / 8 GB limit
+          resources:
+            requests:
+              cpu: "2000m"
+              memory: "4Gi"
+            limits:
+              cpu: "4000m"
+              memory: "8Gi"
+              # Phase 2: nvidia.com/gpu: "1"
+
+          volumeMounts:
+            - name: model-store
+              mountPath: /app/ml_engine/saved_models
+            - name: hf-cache
+              mountPath: /app/.cache/huggingface
+
+          # ML engineer spec: liveness timeout=10s, period=30s, initialDelay=45s
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 45
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          # ML engineer spec: readiness checks phase1_ready=true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          # Startup probe: up to 90s for initial model load
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 12
+
+      volumes:
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: humaneye-ml-model-store
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: humaneye-hf-cache
+
+---
+# EBS-backed PVCs — models survive container restarts
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: humaneye-ml-model-store
+  namespace: humaneye
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: humaneye-hf-cache
+  namespace: humaneye
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+# ML engineer spec: "Port 8001: INTERNAL ONLY. Never expose to internet."
+# Only backend pods can reach port 8001
+apiVersion: v1
+kind: Service
+metadata:
+  name: humaneye-ml-engine
+  namespace: humaneye
+spec:
+  selector:
+    app: ml-engine
+  ports:
+    - port: 8001
+      targetPort: 8001
+  type: ClusterIP
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ml-engine-backend-only
+  namespace: humaneye
+spec:
+  podSelector:
+    matchLabels:
+      app: ml-engine
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - protocol: TCP
+          port: 8001
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8001
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: timescaledb
+      ports:
+        - port: 5432
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: mlflow
+      ports:
+        - port: 5000
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8]
+      ports:
+        - port: 443
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: humaneye-ml-engine-hpa
+  namespace: humaneye
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: humaneye-ml-engine
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 60
